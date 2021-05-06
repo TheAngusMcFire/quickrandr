@@ -233,13 +233,13 @@ pub fn parse_xrandr(s: &str) -> (ConnectedOutputs, OutputNames)
 
             let _unknown_hex_id = splited.next().unwrap();
 
-            let orientation = splited.next().unwrap().replace("(", "").replace(")", "");
+            let orientation = if _unknown_hex_id.contains(")") {   splited.next().unwrap() } else {_unknown_hex_id};//.replace("(", "").replace(")", "");
             let orientation = match &orientation[..] {
                 "normal" => Orientation::Normal,
                 "left" => Orientation::Left,
                 "inverted" => Orientation::Inverted,
                 "right" => Orientation::Right,
-                _ => panic!("unknown orientation"),
+                _ => Orientation::Normal,
             };
 
             geometry = Some(Geometry {

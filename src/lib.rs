@@ -2,7 +2,6 @@
 extern crate serde_derive;
 
 extern crate serde;
-extern crate serde_json;
 extern crate xdg;
 
 use std::io;
@@ -20,7 +19,7 @@ use std::io::prelude::*;
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    Json(serde_json::Error),
+    Json,
     Xdg(xdg::BaseDirectoriesError),
 }
 impl From<io::Error> for Error {
@@ -28,11 +27,11 @@ impl From<io::Error> for Error {
         Error::Io(x)
     }
 }
-impl From<serde_json::Error> for Error {
-    fn from(x: serde_json::Error) -> Self {
-        Error::Json(x)
-    }
-}
+//impl From<serde_json::Error> for Error {
+//    fn from(x: serde_json::Error) -> Self {
+//        Error::Json(x)
+//    }
+//}
 impl From<xdg::BaseDirectoriesError> for Error {
     fn from(x: xdg::BaseDirectoriesError) -> Self {
         Error::Xdg(x)
@@ -40,33 +39,6 @@ impl From<xdg::BaseDirectoriesError> for Error {
 }
 
 pub type DResult<T> = Result<T, Error>;
-
-/// Shells out to xrandr and gets its `--verbose` output
-pub fn query_xrandr() -> io::Result<String> {
-    let mut child = Command::new("xrandr")
-                                .arg("--verbose")
-                                .stdout(Stdio::piped())
-                                .spawn()?;
-
-    let ecode = child.wait()?;
-    assert!(ecode.success());
-
-    let mut s = String::new();
-    child.stdout.take().unwrap().read_to_string(&mut s)?;
-
-    return Ok(s);
-}
-
-pub fn invoke_xrandr(args: &[String]) -> io::Result<()> {
-    let mut child = Command::new("xrandr")
-                                .args(args)
-                                .spawn()?;
-
-    let ecode = child.wait()?;
-    assert!(ecode.success());
-
-    return Ok(());
-}
 
 #[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum Orientation {
@@ -87,8 +59,10 @@ pub struct Geometry {
 }
 
 #[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
-pub struct Output {
+pub struct Output
+{
     pub edid: String,
+    pub connection_name : String,
     pub geometry: Option<Geometry>
 }
 
@@ -98,7 +72,8 @@ pub type ConnectedOutputs = HashMap<String, Output>;
 pub type OutputsRawXrandr = HashMap<String, RawXrandr>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Profile {
+pub struct Profile
+{
     pub outputs: OutputsRawXrandr,
     pub other_outputs: RawXrandr,
 }
@@ -111,6 +86,23 @@ pub struct ConfigFile {
 
 pub type OutputNames = Vec<String>;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MonitorConfig
+{
+    pub display_name : String,
+    pub mode : String,
+    pub position : String,
+    pub orientation : Orientation,
+    pub primary : bool
+}
+
+pub struct ConfigAndXrandr
+{
+    pub connected_outputs: ConnectedOutputs,
+    pub output_names: OutputNames,
+}
+
+/*
 impl Output {
     pub fn raw_edid_to_bytes(&self) -> Vec<u8> {
         let mut gather_bytes = Vec::new();
@@ -135,9 +127,37 @@ impl Output {
     }
     */
 }
+*/
 
+pub fn query_xrandr() -> io::Result<String>
+{
+    //let mut s = String::new();
+    //child.stdout.take().unwrap().read_to_string(&mut s)?;
 
-pub fn parse_xrandr(s: &str) -> (ConnectedOutputs, OutputNames) {
+    let monitor_info_cli = String::from_utf8(
+        Command::new("xrandr")
+            .args(&["--prop"])
+            .output()
+            .unwrap()
+            .stdout,
+    ).unwrap();
+
+    return Ok(monitor_info_cli);
+}
+
+pub fn invoke_xrandr(args: &[String]) -> io::Result<()> {
+    let mut child = Command::new("xrandr")
+        .args(args)
+        .spawn()?;
+
+    let ecode = child.wait()?;
+    assert!(ecode.success());
+
+    return Ok(());
+}
+
+pub fn parse_xrandr(s: &str) -> (ConnectedOutputs, OutputNames)
+{
     let mut connected_outputs = HashMap::new();
     let mut output_names = Vec::new();
 
@@ -213,8 +233,8 @@ pub fn parse_xrandr(s: &str) -> (ConnectedOutputs, OutputNames) {
 
             let _unknown_hex_id = splited.next().unwrap();
 
-            let orientation = splited.next().unwrap();
-            let orientation = match orientation {
+            let orientation = splited.next().unwrap().replace("(", "").replace(")", "");
+            let orientation = match &orientation[..] {
                 "normal" => Orientation::Normal,
                 "left" => Orientation::Left,
                 "inverted" => Orientation::Inverted,
@@ -241,19 +261,55 @@ pub fn parse_xrandr(s: &str) -> (ConnectedOutputs, OutputNames) {
 
             if line.trim() == "EDID:" {
                 let mut gather = String::new();
-                for _ in 0..8 {
+                for _ in 0..16 {
                     gather.push_str(lines.next().unwrap().trim());
                 }
 
-                let out = Output {
+                assert_eq!(gather.len(), 256 * 2);
+
+                let data = hex::decode(&gather).expect("Decoding failed");
+
+                let (mon_nfo, llll) =  edid::parse(data.as_ref()).unwrap();
+
+
+                let name = llll.descriptors.iter().find_map(|x| match x
+                {
+                    edid::Descriptor::ProductName(v) => Some(v),
+                    _ => None
+                }).unwrap();
+
+                let serial = llll.descriptors.iter().find_map(|x| match x
+                {
+                    edid::Descriptor::SerialNumber(v) => Some(v),
+                    _ => None
+                });
+
+                println!("{:?}", serial);
+
+                /*
+                let mut monitor_name = gather.split_off(190);
+                let mon_name_term = monitor_name.find("0a").unwrap();
+                monitor_name.split_off(mon_name_term);
+                let decoded_mon_name = hex::decode(monitor_name).expect("Decoding failed");
+                let mon_name = match String::from_utf8(decoded_mon_name)
+                {
+                  Ok(x) => x,
+                    Err(e) => "lol".to_string()
+                };
+
+                 */
+
+                let out = Output
+                {
                     edid: gather,
-                    geometry: geometry,
+                    connection_name : output_name.to_string(),
+                    geometry,
                 };
 
                 //println!("HEX: {}", out.edid);
                 //println!("PARSED: {:?}", out.parse_edid());
 
-                connected_outputs.insert(output_name.to_string(), out);
+                connected_outputs.insert(name.to_string(), out);
 
                 break;
             }
@@ -265,6 +321,164 @@ pub fn parse_xrandr(s: &str) -> (ConnectedOutputs, OutputNames) {
     (connected_outputs, output_names)
 }
 
+
+pub fn load_xrandr_layout() -> DResult<ConfigAndXrandr>
+{
+    //let config_file = {
+    //    use std::thread;
+    //    let path = path.to_owned();
+    //    thread::spawn(move || parse_json(&load_file(&path)?))
+    //};
+
+    //let config_file = config_file.join().unwrap()?;
+
+    let (connected_outputs, output_names) = parse_xrandr(&query_xrandr()?);
+
+    Ok(ConfigAndXrandr
+    {
+        connected_outputs,
+        output_names,
+    })
+}
+
+
+pub fn save_layout(path : &str)
+{
+    let mut file = match File::create(path)
+    {
+        Ok(x) => x,
+        Err(e) => { eprintln!("Error opening file: {}", e); return;}
+    };
+
+    let curr_layout = match load_xrandr_layout()
+    {
+        Ok(x) => x,
+        Err(e) => {eprintln!("Error reading xrandr config: {:?}", e); return;}
+    };
+
+    //let curr_configs : Vec<MonitorConfig>
+    let curr_configs : Vec<MonitorConfig> = curr_layout.connected_outputs
+    .into_iter()
+    .map(|x|
+    {
+        if x.1.geometry.is_none(){ return None }
+
+        let geo = x.1.geometry.unwrap();
+
+        let mode = if geo.orientation == Orientation::Normal || geo.orientation == Orientation::Inverted
+        {
+            format!("{}x{}", geo.width, geo.height)
+        }
+        else
+        {
+            format!("{}x{}", geo.height, geo.width)
+        };
+
+
+        return Some(MonitorConfig
+        {
+            display_name : x.0,
+            mode,
+            orientation : geo.orientation,
+            position : format!("{}x{}", geo.x_offset, geo.y_offset),
+            primary : geo.is_primary
+        })
+    }).filter(|x| x.is_some())
+      .map(|x| x.unwrap())
+      .collect();
+
+    let yaml_file = serde_yaml::to_string(&curr_configs).unwrap();
+    file.write_all(yaml_file.as_bytes());
+    file.flush();
+}
+
+pub fn load_layout(path : &str)
+{
+    let mut file = match File::open(path)
+    {
+        Ok(x) => x,
+        Err(e) => { eprintln!("Error opening file: {}", e); return;}
+    };
+
+    let mut configs : Vec<MonitorConfig> = serde_yaml::from_reader(file).unwrap();
+
+    let curr_layout = match load_xrandr_layout()
+    {
+        Ok(x) => x,
+        Err(e) => {eprintln!("Error reading xrandr config: {:?}", e); return;}
+    };
+
+    let ports_to_enable : Vec<String> = curr_layout.connected_outputs.iter().filter(|x| configs.iter().any(|y| y.display_name == *(*x).0)).map(|x| x.1.connection_name.clone()).collect();
+    let monitor_to_enable : Vec<(String, Output)> = curr_layout.connected_outputs.into_iter().filter(|x| configs.iter().any(|y| y.display_name == *(*x).0)).map(|x| ( x.0, x.1)).collect();
+
+    println!("{:?}", curr_layout.output_names);
+    let ports_to_disable : Vec<String> = curr_layout.output_names.into_iter().filter(|x| !ports_to_enable.iter().any(|y| y == x)).collect();
+    println!("{:?}", ports_to_enable);
+    println!("{:?}", ports_to_disable);
+    println!("{:?}", monitor_to_enable);
+
+    let mut disable_args : Vec<String> = Vec::new();
+
+    for po in ports_to_disable
+    {
+        disable_args.push("--output".to_string());
+        disable_args.push(po);
+        disable_args.push("--off".to_string());
+    }
+
+    disable_args.iter().for_each(|x| print!("{} ", x));
+    println!();
+
+    let xrandr_output = String::from_utf8(
+        Command::new("xrandr")
+            .args(disable_args)
+            .output()
+            .unwrap()
+            .stdout,
+    ).unwrap();
+
+    let mut enable_args : Vec<String> = Vec::new();
+
+    for po in monitor_to_enable
+    {
+        enable_args.push("--output".to_string());
+        enable_args.push(po.1.connection_name.clone());
+
+        enable_args.push("--mode".to_string());
+        let config_idx = configs.iter().position(|x| x.display_name == po.0).unwrap();
+        let config = configs.remove(config_idx);
+        enable_args.push(config.mode);
+
+        enable_args.push("--pos".to_string());
+        enable_args.push(config.position);
+
+        enable_args.push("--rotate".to_string());
+
+        let orientation_str = match config.orientation {
+            Orientation::Normal => "normal",
+            Orientation::Inverted => "inverted",
+            Orientation::Left => "left",
+            Orientation::Right => "right",
+        };
+
+        enable_args.push(orientation_str.to_string());
+    }
+
+    enable_args.iter().for_each(|x| print!("{} ", x));
+    println!();
+
+    let xrandr_output = String::from_utf8(
+        Command::new("xrandr")
+            .args(enable_args)
+            .output()
+            .unwrap()
+            .stdout,
+    ).unwrap();
+
+    println!("{}", xrandr_output);
+}
+
+/*
 pub fn parse_json(s: &str) -> DResult<ConfigFile> {
     Ok(serde_json::from_str(s)?)
 }
@@ -295,27 +509,7 @@ pub fn xdg_config_file() -> DResult<PathBuf> {
     Ok(xdg_dirs.place_config_file("config.json")?)
 }
 
-pub struct ConfigAndXrandr {
-    pub config_file: ConfigFile,
-    pub connected_outputs: ConnectedOutputs,
-    pub output_names: OutputNames,
-}
 
-pub fn load_config_and_query_xrandr(path: &Path) -> DResult<ConfigAndXrandr> {
-    let config_file = {
-        use std::thread;
-        let path = path.to_owned();
-        thread::spawn(move || parse_json(&load_file(&path)?))
-    };
-    let (connected_outputs, output_names) = parse_xrandr(&query_xrandr()?);
-    let config_file = config_file.join().unwrap()?;
-
-    Ok(ConfigAndXrandr {
-        config_file,
-        connected_outputs,
-        output_names,
-    })
-}
 
 pub fn save_config(path: &Path, config_file: &ConfigFile) -> DResult<()> {
     save_file(path, &generate_json(config_file)?)?;
@@ -547,3 +741,4 @@ pub fn cmd_profile(path: &Path, profile: &str, debug: bool) {
 
     apply_profile(&output_names, &config_file.profiles, profile, debug);
 }
+*/
